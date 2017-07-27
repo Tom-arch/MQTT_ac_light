@@ -1,0 +1,204 @@
+//GLobal includes
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+
+//Define constants
+#define SWITCH1   12
+#define SWITCH2   14
+#define LIGHT     4
+#define NO_WIFI   5000
+#define NO_MQTT   500
+#define WORKING   10000
+
+//Global constants
+// Wifi
+const PROGMEM char* WL_SSID = "your_ssid";
+const PROGMEM char* WL_PWD = "your_wifi_pwd";
+
+// MQTT
+const PROGMEM char* SERVER = "192.168.1.4";
+const PROGMEM uint16_t PORT = 1883;
+const PROGMEM char* CLIENT_ID = "your_client_id";
+const PROGMEM char* USERNAME = "user";
+const PROGMEM char* PASSWORD = "password";
+const PROGMEM char* STATE_TOPIC = "light/state";
+const PROGMEM char* COMMAND_TOPIC = "light/command";
+
+// payload
+const char* LIGHT_ON = "ON";
+const char* LIGHT_OFF = "OFF";
+
+//Global variables
+int switch1 = LOW;
+int switch2 = LOW;
+bool lightStatus = false;
+bool ledStatus = false;
+bool wifiRequested = false;
+bool publishStatus = true;
+unsigned long prevMillis = 0;
+unsigned long blinkInterval = 0;
+uint8_t command = 0;
+
+WiFiClient wfClient;
+PubSubClient mqttClient;
+
+void setup() {
+  Serial.begin(115200);
+  // Init the pins
+  pinMode(SWITCH1, INPUT);
+  pinMode(SWITCH2, INPUT);
+  pinMode(LIGHT, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+  digitalWrite(LIGHT, HIGH);
+  delay(500);
+  digitalWrite(LED_BUILTIN, HIGH);
+  
+  //Init the global variables
+  lightStatus = false;
+  ledStatus = true;
+  readSwitches();
+  blinkInterval = NO_WIFI;
+
+  // Init the mqtt client parameters
+  mqttClient.setClient(wfClient);
+  mqttClient.setServer(SERVER, PORT);
+  mqttClient.setCallback(callback);
+  
+  //Set the starting point for flashing
+  prevMillis = millis();
+}
+
+void loop() {
+  //Check if there is something to do
+  checkEverything();
+  //A flashing speed has been set. Follow it.
+  unsigned long tempMillis = millis();
+  //Millis overflow check
+  if(tempMillis < prevMillis) {
+    prevMillis = 0;
+  }
+
+  if((tempMillis-prevMillis) >= blinkInterval) {
+    triggerLed();
+    prevMillis = millis();
+    if(blinkInterval == WORKING) {
+      publishStatus = true;
+    }
+  }
+  
+}
+
+//This method checks that everything is in order
+void checkEverything() {
+  //First check if any MQTT command was received
+  if (command == 1) {
+    triggerLight(true);
+    command = 0;
+    readSwitches(); //If the switch was pressed, the command overrides it
+    publishStatus = true;
+  } else if (command == 2) {
+    triggerLight(false);
+    command = 0;
+    readSwitches();
+    publishStatus = true;
+  } else {
+    //Check if the switches status has changed
+    bool manualChange = readSwitches();
+    if(manualChange) {
+      triggerLight(!lightStatus);
+      publishStatus = true;
+    }
+  }
+
+  //Check if the wifi is not connected
+  if(WiFi.status() != WL_CONNECTED) {
+    if(!wifiRequested) {
+      WiFi.begin(WL_SSID, WL_PWD);
+      blinkInterval = NO_WIFI;
+      wifiRequested = true;
+    }
+  } else {
+    wifiRequested = false;
+    //Check if MQTT is connected
+    if (!mqttClient.connected()) {
+      if(mqttClient.connect(CLIENT_ID, USERNAME, PASSWORD)) {
+        mqttClient.subscribe(COMMAND_TOPIC);
+      }
+      blinkInterval = NO_MQTT;
+    } else {
+      blinkInterval = WORKING;
+      //Publish the status
+      if(publishStatus) {
+        publishStatus = false;
+        if(lightStatus) {
+          mqttClient.publish(STATE_TOPIC, LIGHT_ON);
+        } else {
+          mqttClient.publish(STATE_TOPIC, LIGHT_OFF);
+        }
+      }
+      //Loop the client
+      mqttClient.loop();
+    }
+  }
+}
+
+//Callback to receive MQTT commands
+//Note that no command is executed here, it is only set
+void callback(char* topic, byte* payload, unsigned int len) {
+  
+  //Parse the message
+  char message_buff[len+1];
+  int i = 0;
+  for(i=0; i<len; i++) {
+    message_buff[i] = payload[i];
+  }
+  message_buff[i] = '\0';
+  
+  String msgString = String(message_buff);
+
+  
+  //Ignore the topic since it is always the same
+  if (msgString.equals("ON")) {
+    command = 1;
+  } else if (msgString.equals("OFF")) {
+    command = 2;
+  }
+}
+
+
+bool readSwitches() {
+  bool ret = false;
+  int temp1 = digitalRead(SWITCH1);
+  int temp2 = digitalRead(SWITCH2);
+  Serial.print(temp1);
+  Serial.print("     ");
+  Serial.println(temp2);
+  if(temp1 != switch1 || temp2 != switch2) {
+    ret = true;
+  }
+  switch1 = temp1;
+  switch2 = temp2;
+  return ret;
+}
+
+void triggerLed() {
+  if(ledStatus) {
+    digitalWrite(LED_BUILTIN, HIGH);
+    ledStatus = false;
+  } else {
+    digitalWrite(LED_BUILTIN, LOW);
+    ledStatus = true;
+  }
+}
+
+void triggerLight(bool light_on) {
+  if(light_on) {
+    digitalWrite(LIGHT, LOW);
+    lightStatus = true;
+  } else {
+    digitalWrite(LIGHT, HIGH);
+    lightStatus = false;
+  }
+}
+
