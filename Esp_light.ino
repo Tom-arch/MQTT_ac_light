@@ -35,9 +35,11 @@ bool lightStatus = false;
 bool ledStatus = false;
 bool wifiRequested = false;
 bool publishStatus = true;
-unsigned long prevMillis = 0;
+unsigned long prevBlinkMillis = 0;
 unsigned long blinkInterval = 0;
-uint8_t command = 0;
+unsigned long prevBDebounceMillis = 0;
+unsigned long debounceInterval = 100;
+volatile uint8_t command = 0;
 
 WiFiClient wfClient;
 PubSubClient mqttClient;
@@ -64,9 +66,13 @@ void setup() {
   mqttClient.setClient(wfClient);
   mqttClient.setServer(SERVER, PORT);
   mqttClient.setCallback(callback);
+
+  //Safety initial delay
+  delay(500);
   
   //Set the starting point for flashing
-  prevMillis = millis();
+  prevBlinkMillis = millis();
+  prevDebounceMillis = millis();
 }
 
 void loop() {
@@ -75,16 +81,28 @@ void loop() {
   //A flashing speed has been set. Follow it.
   unsigned long tempMillis = millis();
   //Millis overflow check
-  if(tempMillis < prevMillis) {
-    prevMillis = 0;
+  if(tempMillis < prevBlinkMillis) {
+    prevBlinkMillis = 0;
   }
 
-  if((tempMillis-prevMillis) >= blinkInterval) {
+  //Blink timer handling
+  if((tempMillis-prevBlinkMillis) >= blinkInterval) {
     triggerLed();
-    prevMillis = millis();
+    prevBlinkMillis = millis();
     if(blinkInterval == WORKING) {
       publishStatus = true;
     }
+  }
+
+  //Check if the switches status has changed
+  bool manualChange = readSwitches(); //This sets the status of the switches to the new one
+  if(manualChange) {
+    prevDebounceMillis = tempMillis;
+  }
+
+  if((tempMillis-prevDebounceMillis) > debounceInterval) { //Equal removed because if the status changes, the timer is set to tempMillis
+    triggerLight(!lightStatus);
+    publishStatus = true;
   }
   
 }
@@ -102,13 +120,6 @@ void checkEverything() {
     command = 0;
     readSwitches();
     publishStatus = true;
-  } else {
-    //Check if the switches status has changed
-    bool manualChange = readSwitches();
-    if(manualChange) {
-      triggerLight(!lightStatus);
-      publishStatus = true;
-    }
   }
 
   //Check if the wifi is not connected
@@ -167,6 +178,7 @@ void callback(char* topic, byte* payload, unsigned int len) {
 }
 
 
+//Read the switches and set the status
 bool readSwitches() {
   bool ret = false;
   int temp1 = digitalRead(SWITCH1);
